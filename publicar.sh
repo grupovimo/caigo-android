@@ -5,6 +5,8 @@ set -e
 M=~/Trabajo/vimo/caigo; R=~/Trabajo/vimo/caigo-android; MSJ="$1"
 # paridad.txt y respuestas.json frescos (los lee el test; el espejo no tiene apps/ios ni apps/pruebas).
 sh "$M/apps/android/herramientas/paridad.sh"
+# Qué links abren la app (EnlacesTest): la misma lista que sirve Caddy.
+cp "$M/apps/pruebas/enlaces.json" "$M/apps/android/app/src/test/resources/pruebas/enlaces.json"
 rsync -a --delete --exclude .git --exclude publicar.sh --exclude local.properties --exclude build --exclude .gradle --exclude .kotlin "$M/apps/android/" "$R/"
 PIE="
 
