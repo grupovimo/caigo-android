@@ -62,13 +62,15 @@ private suspend fun Call.esperar(): Response = suspendCancellableCoroutine { con
 
 /**
  * Cliente de la API de Caigo. Todo pedido lleva `Authorization: Bearer <token cs_…>`.
- * Si la API responde 401, se avisa a [alVencer] (la sesión se cierra en la app).
+ * Si la API responde 401, se avisa a [alVencer] (la sesión se cierra en la app); si responde 403 `falta_dni`, a
+ * [alFaltarDni] (la app lleva a la verificación con DNI).
  */
 class Api(
     val base: String,
     val http: OkHttpClient,
     private val token: () -> String?,
     private val alVencer: () -> Unit = {},
+    private val alFaltarDni: () -> Unit = {},
 ) {
     private val tipoJson = "application/json; charset=utf-8".toMediaType()
 
@@ -89,6 +91,7 @@ class Api(
                 if (!r.isSuccessful) {
                     val p = runCatching { json.decodeFromString<Problema>(texto) }.getOrElse { Problema(title = "Error ${r.code}") }
                     if (r.code == 401 && autorizacion == null) alVencer()
+                    if (r.code == 403 && p.code == "falta_dni" && autorizacion == null) alFaltarDni()
                     throw ErrorApi(r.code, p.copy(status = r.code))
                 }
                 texto
@@ -238,7 +241,7 @@ class Api(
     suspend fun mensajes(planId: String, antes: Long? = null): Mensajes = get("/v1/planes/$planId/mensajes", "antes" to antes)
     suspend fun escribir(planId: String, texto: String): Mensaje = enviar("POST", "/v1/planes/$planId/mensajes", Texto(texto))
     suspend fun conversaciones(): Conversaciones = get("/v1/privados")
-    /** PARA LAS PANTALLAS: el iPhone no pagina los privados (`antes` queda por compatibilidad con Chat.kt). */
+    /** De a 100, del más viejo al más nuevo; `antes` trae los anteriores a ese id. */
     suspend fun privados(conId: String, antes: Long? = null): Privados = get("/v1/privados/$conId", "antes" to antes)
     suspend fun escribirPrivado(conId: String, texto: String): Privado = enviar("POST", "/v1/privados/$conId", Texto(texto))
 

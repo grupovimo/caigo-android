@@ -41,13 +41,15 @@ object Fecha {
     fun diasEntre(a: ZonedDateTime, b: ZonedDateTime): Int =
         ChronoUnit.DAYS.between(a.withZoneSameInstant(ZonaAR).toLocalDate(), b.withZoneSameInstant(ZonaAR).toLocalDate()).toInt()
 
-    /** "Hoy 20:30", "Mañana 21:00", "Sáb 10:00". */
+    /** "Hoy 20:30", "Mañana 21:00", "Sáb 10:00"; fuera de esta semana, con el día y el mes: "Mié 3/3 22:00". */
     fun cuando(iso: String, ahora: ZonedDateTime = ZonedDateTime.now(ZonaAR)): String {
         val t = parse(iso) ?: return ""
         return when (diasEntre(ahora, t)) {
             0 -> "Hoy ${hora(t)}"
             1 -> "Mañana ${hora(t)}"
-            else -> "${diaCorto(t)} ${hora(t)}"
+            in 2..6 -> "${diaCorto(t)} ${hora(t)}"
+            // Fuera de esta semana, con el día y el mes: "Mié 3/3 22:00".
+            else -> t.withZoneSameInstant(ZonaAR).let { a -> "${diaCorto(t)} ${a.dayOfMonth}/${a.monthValue} ${hora(t)}" }
         }
     }
 
@@ -70,7 +72,8 @@ object Fecha {
         val dia = when (diasEntre(ahora, t)) {
             0 -> "Hoy"
             1 -> "Mañana"
-            else -> "${diaLargo(t)} ${t.dayOfMonth}"
+            in 2..6 -> "${diaLargo(t)} ${t.withZoneSameInstant(ZonaAR).dayOfMonth}"
+            else -> "${diaLargo(t)} ${t.withZoneSameInstant(ZonaAR).dayOfMonth} de ${mes(t)}"
         }
         return "$dia, ${hora(t)} a ${hora(fin)}"
     }

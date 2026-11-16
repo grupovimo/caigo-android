@@ -101,7 +101,6 @@ import kotlinx.coroutines.launch
 import java.time.ZonedDateTime
 
 private fun requisitos(p: Plan): List<String> = buildList {
-    if (p.soloVerificados) add("Solo verificados")
     add(textoIngreso(p))
     if (p.genero == "mujeres") add("Solo mujeres")
     if (p.genero == "diversidades") add("Solo diversidades")
@@ -207,8 +206,10 @@ private fun ContenidoDetalle(ir: Ir, p: Plan, recargar: () -> Unit) {
 
     fun sumarme() {
         val n = if (grupo == 1 && p.aceptaGrupos && p.faltan > 1) cantidad else 1
+        if (enviando) return
+        // Antes del launch: un segundo toque no llega a mandar otro pedido.
+        enviando = true
         alcance.launch {
-            enviando = true
             if (planesSumarse(c, ir, avisos, p, n, mensaje.trim(), vibrar = { Sistema.vibrar(vista) }) != null) recargar()
             enviando = false
         }
@@ -216,7 +217,7 @@ private fun ContenidoDetalle(ir: Ir, p: Plan, recargar: () -> Unit) {
 
     /** DELETE /v1/entradas/{id}: devuelve según la política (flex, mod) o 409 `sin_reembolso`. */
     suspend fun cancelarMiEntrada() {
-        val e = c.api.pases().entradas.firstOrNull { it.planId == p.id }
+        val e = c.api.pases().entradas.firstOrNull { it.planId == p.id && it.estado == "pagada" }
             ?: throw ErrorApi(0, Problema(detail = "No encontramos tu entrada. Probá en un ratito."))
         try {
             val r = c.api.cancelarEntrada(e.id)
@@ -292,13 +293,6 @@ private fun ContenidoDetalle(ir: Ir, p: Plan, recargar: () -> Unit) {
                     if (p.descripcion.isNotEmpty()) T(p.descripcion, 15f, 400, pal.texto2, alto = 1.5f)
                     if (p.lugar != null) TarjetaEntrada(p)
                     if (p.beneficio.isNotEmpty()) PlanesBeneficio(p.beneficio, desbloqueado = false)
-                    if (p.soloVerificados) Row(
-                        Modifier.fillMaxWidth().background(pal.superficie, RoundedCornerShape(18.dp)).padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Icono(I.escudoCheck, 20.dp, if (pal.oscuro) C.lima else C.violetaTexto, 2.2f)
-                        T("Solo gente verificada con DNI", 13f, 700, pal.texto)
-                    }
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         T("Requisitos", 13f, 700, pal.texto2, modifier = Modifier.padding(vertical = 6.dp))
                         requisitos(p).forEach {
@@ -330,7 +324,7 @@ private fun ContenidoDetalle(ir: Ir, p: Plan, recargar: () -> Unit) {
                             if (!p.conEntrada) ir.qrOrganizador(p.id)
                             else alcance.launch {
                                 try {
-                                    val e = c.api.pases().entradas.firstOrNull { it.planId == p.id }
+                                    val e = c.api.pases().entradas.firstOrNull { it.planId == p.id && it.estado == "pagada" }
                                     if (e != null) ir.qrEntrada(e.id) else avisos.error("Todavía no está tu entrada. Probá en un ratito.")
                                 } catch (e: Throwable) {
                                     if (e is kotlinx.coroutines.CancellationException) throw e
@@ -419,6 +413,9 @@ private fun EstadoAbajo(
                 Cta("Ir al chat del plan", { ir.chat(p.id) }, Modifier.fillMaxWidth(), gel = Gels.violeta, color = C.blanco, alto = 58.dp, tam = 18f)
             }
         }
+        // Un plan que ya pasó no espera respuesta ni deja sumarse, aunque el pedido siga pendiente.
+        yaPaso(p) && !p.adentro -> T("Este plan ya pasó.", 15f, 700, pal.texto2, alinear = TextAlign.Center)
+        p.miEstado == "rechazada" -> T("Esta vez el organizador no te sumó.", 15f, 700, pal.texto2, alinear = TextAlign.Center)
         p.miEstado == "pendiente" -> Box(
             Modifier.fillMaxWidth().height(62.dp).gel(22.dp, vertical(C.tinte1, C.tinte1), listOf(interna(3f, 6f, rgba(116, 86, 241, .2f)))),
             contentAlignment = Alignment.Center,
@@ -443,8 +440,9 @@ private fun EstadoAbajo(
         Cupo.completo(p.faltan) -> Box(Modifier.fillMaxWidth().height(58.dp).gel(20.dp, Gels.limaBadge), contentAlignment = Alignment.Center) {
             T("Completo", 17f, 800, C.carbon)
         }
-        yaPaso(p) -> T("Este plan ya pasó.", 15f, 700, pal.texto2, alinear = TextAlign.Center)
         else -> {
+            // Se bajó (`cancelada`): puede volver a sumarse, pero se le recuerda.
+            if (p.miEstado == "cancelada") T("Te bajaste de este plan.", 13f, 600, pal.texto2, alinear = TextAlign.Center)
             val permiteGrupo = p.aceptaGrupos && p.faltan > 1
             val n = if (grupo == 1 && permiteGrupo) cantidad else 1
             if (permiteGrupo) {
@@ -542,7 +540,7 @@ private fun Organizador(ir: Ir, p: Plan) {
             }
             T(
                 if (p.lugar != null) "Lugar aliado · verificado por Caigo"
-                else if (o.asistencia.de > 0) "Fue a ${o.asistencia.fue} de ${o.asistencia.de} planes · ${asistencia(o.asistencia.fue, o.asistencia.de)}"
+                else if (o.asistencia.de > 0) "Fue a ${o.asistencia.fue} de ${o.asistencia.de} ${if (o.asistencia.de == 1) "plan" else "planes"} · ${asistencia(o.asistencia.fue, o.asistencia.de)}"
                 else "Nuevo en Caigo",
                 13f, 400, pal.texto2,
             )

@@ -27,6 +27,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -50,6 +51,12 @@ import ar.com.caigo.app.nucleo.Mensaje
 import ar.com.caigo.app.nucleo.Plan
 import ar.com.caigo.app.nucleo.Privado as PrivadoMsj
 import ar.com.caigo.app.nucleo.mensajeDe
+import ar.com.caigo.app.nucleo.ErrorApi
+import ar.com.caigo.app.nucleo.Problema
+import ar.com.caigo.app.nucleo.Plata
+import ar.com.caigo.app.pantallas.planes.HojaConfirmar
+import ar.com.caigo.app.pantallas.planes.esDeLugar
+import ar.com.caigo.app.pantallas.planes.planesPolitica
 import ar.com.caigo.app.nucleo.Cupo
 import ar.com.caigo.app.app.Ir
 import ar.com.caigo.app.piezas.Avatar
@@ -81,6 +88,9 @@ import androidx.compose.ui.text.style.TextAlign
 import ar.com.caigo.app.app.Pestana
 import ar.com.caigo.app.nucleo.Perfil
 
+/** La API manda los mensajes de a 100 (chat del plan y privados). */
+internal const val MIOS_PAGINA = 100
+
 /** Un renglón del chat, sea del plan o privado. */
 internal data class MiosLinea(val id: Long, val texto: String, val mio: Boolean, val sistema: Boolean, val autor: String, val foto: String)
 
@@ -105,12 +115,16 @@ fun Chat(ir: Ir, planId: String) {
     var opciones by remember { mutableStateOf(false) }
     var reportando by remember { mutableStateOf(false) }
     var confirmando by remember { mutableStateOf(false) }
+    var cancelandoEntrada by remember { mutableStateOf(false) }
+    // La API manda de a 100: si vino una página llena, puede haber mensajes más viejos.
+    var hayMas by remember(planId) { mutableStateOf(false) }
 
     LaunchedEffect(planId) { plan = runCatching { c.api.plan(planId) }.getOrNull() }
     LaunchedEffect(planId) {
         try {
             val ms = c.api.mensajes(planId).mensajes
             lineas.clear(); lineas.addAll(ms.map { it.linea(yo) })
+            hayMas = ms.size >= MIOS_PAGINA
         } catch (e: Throwable) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             error = mensajeDe(e)
@@ -145,10 +159,28 @@ fun Chat(ir: Ir, planId: String) {
                     avisos.ok("Saliste del plan.")
                 }
                 ir.principal(Pestana.Mis)
+            } catch (e: ErrorApi) {
+                // Tiene una entrada paga: no se sale, se cancela la entrada (desde el detalle del plan).
+                if (e.codigo == "con_entrada") avisos.error(e.problema.detail.ifEmpty { "Tenés una entrada paga: cancelala desde el plan." })
+                else avisos.error(mensajeDe(e))
             } catch (e: Throwable) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 avisos.error(mensajeDe(e))
             }
+        }
+    }
+
+    /** DELETE /v1/entradas/{id} (como el detalle): devuelve según la política o 409 `sin_reembolso`. */
+    suspend fun cancelarMiEntrada() {
+        val e = c.api.pases().entradas.firstOrNull { it.planId == planId && it.estado == "pagada" }
+            ?: throw ErrorApi(0, Problema(detail = "No encontramos tu entrada. Probá en un ratito."))
+        try {
+            val r = c.api.cancelarEntrada(e.id)
+            avisos.ok(if (r.reembolsoCentavos > 0) "Listo. Te devolvemos ${Plata.pesos(r.reembolsoCentavos)} por Mercado Pago." else "Listo, cancelaste tu entrada.")
+            ir.principal(Pestana.Mis)
+        } catch (x: ErrorApi) {
+            if (x.codigo != "sin_reembolso") throw x
+            throw ErrorApi(x.estado, Problema(detail = x.problema.detail.ifEmpty { "El lugar no devuelve entradas de este plan." }))
         }
     }
 
@@ -207,7 +239,14 @@ fun Chat(ir: Ir, planId: String) {
                     T("Ver plan", 13f, 700, if (p.oscuro) C.lima else C.violetaTexto, Modifier.tocable { ir.plan(planId) })
                 }
             }
-            MiosVistaHilo(lineas, cargado, error, escribe?.first, Modifier.weight(1f))
+            MiosVistaHilo(lineas, cargado, error, escribe?.first, Modifier.weight(1f), hayMas = hayMas) {
+                // Los anteriores al primero (GET …?antes=), arriba de todo.
+                val primero = lineas.firstOrNull()?.id ?: return@MiosVistaHilo
+                val viejas = runCatching { c.api.mensajes(planId, antes = primero).mensajes }.getOrNull()
+                if (viejas == null) { hayMas = false; return@MiosVistaHilo }
+                hayMas = viejas.size >= MIOS_PAGINA
+                lineas.addAll(0, viejas.filter { v -> lineas.none { it.id == v.id } }.map { it.linea(yo) })
+            }
             MiosEntrada(abajo, { c.tiempoReal.escribiendo(planId) }) { t ->
                 try {
                     val m = c.api.escribir(planId, t)
@@ -219,12 +258,21 @@ fun Chat(ir: Ir, planId: String) {
                 }
             }
         }
-        // Menú del chat: reportar el plan y salir (el organizador no sale: cancela el plan).
+        // Menú del chat: reportar el plan y salir (el organizador no sale: cancela el plan). En un plan de lugar con
+        // entrada no se sale: se cancela la entrada, como en el detalle. Mientras el plan no cargó, sólo reportar.
         val organizo = pl?.miEstado == "organizador"
-        if (opciones) HojaOpciones({ opciones = false }, listOf(
-            "Reportar el plan" to { reportando = true },
-            (if (organizo) "Cancelar el plan" else "Salir del plan") to { confirmando = true },
-        ))
+        if (opciones) HojaOpciones({ opciones = false }, buildList<Pair<String, () -> Unit>> {
+            add("Reportar el plan" to { reportando = true })
+            if (pl != null) {
+                if (pl.esMio) add("Cancelar el plan" to { confirmando = true })
+                else if (esDeLugar(pl)) { if (pl.adentro && !pl.cancelado) add("Cancelar mi entrada" to { cancelandoEntrada = true }) }
+                else add("Salir del plan" to { confirmando = true })
+            }
+        })
+        if (pl != null) HojaConfirmar(
+            cancelandoEntrada, if (pl.cancelacion == "strict") "Tu entrada no tiene reembolso" else "¿Cancelar tu entrada?",
+            planesPolitica(pl.cancelacion), if (pl.cancelacion == "strict") null else "Cancelar mi entrada", { cancelandoEntrada = false },
+        ) { cancelarMiEntrada() }
         if (reportando) HojaReporte({ reportando = false }) { motivo ->
             alcance.launch {
                 try {
@@ -245,15 +293,33 @@ fun Chat(ir: Ir, planId: String) {
 
 /** Los mensajes (abajo de todo el último) y "X está escribiendo…". */
 @Composable
-internal fun MiosVistaHilo(lineas: List<MiosLinea>, cargado: Boolean, error: String?, escribe: String?, modifier: Modifier, foto: String? = null) {
+internal fun MiosVistaHilo(
+    lineas: List<MiosLinea>, cargado: Boolean, error: String?, escribe: String?, modifier: Modifier, foto: String? = null,
+    hayMas: Boolean = false, alCargarMas: suspend () -> Unit = {},
+) {
     val p = LocalPaleta.current
     val lista = rememberLazyListState()
-    // Baja al final cuando llega un mensaje o alguien escribe.
-    LaunchedEffect(lineas.size, escribe) {
+    // Ya bajó al final la primera vez: recién ahí, llegar arriba trae los viejos.
+    var abajo by remember { mutableStateOf(false) }
+    var cargandoMas by remember { mutableStateOf(false) }
+    // Baja al final cuando llega un mensaje o alguien escribe (no al traer los viejos de arriba).
+    LaunchedEffect(lineas.lastOrNull()?.id, escribe) {
         val n = lineas.size + (if (escribe != null) 1 else 0)
         if (n > 0) lista.animateScrollToItem(n - 1)
+        abajo = true
+    }
+    // Arriba de todo, los más viejos: se traen al llegar (de a 100) y se queda donde estaba.
+    val arriba by remember { derivedStateOf { lista.firstVisibleItemIndex == 0 } }
+    LaunchedEffect(arriba, hayMas, abajo) {
+        if (!arriba || !hayMas || !abajo || cargandoMas) return@LaunchedEffect
+        cargandoMas = true
+        val ancla = lineas.firstOrNull()?.id
+        try { alCargarMas() } finally { cargandoMas = false }
+        val i = lineas.indexOfFirst { it.id == ancla }
+        if (i > 0) lista.scrollToItem(i)
     }
     Box(modifier.fillMaxWidth()) {
+        if (cargandoMas) Box(Modifier.fillMaxWidth().padding(top = 6.dp).zIndex(1f), contentAlignment = Alignment.Center) { Puntitos(p.acento) }
         when {
             !cargado -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Puntitos(p.acento) }
             error != null && lineas.isEmpty() -> Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
@@ -449,13 +515,16 @@ fun Privado(ir: Ir, conId: String, nombre: String) {
     var reportando by remember { mutableStateOf(false) }
     /** Último aviso de «escribiendo» que se mandó (como mucho uno cada 2 s). */
     var ultimoEscribiendo by remember { mutableStateOf(0L) }
+    var hayMas by remember(conId) { mutableStateOf(false) }
 
     LaunchedEffect(conId) {
         // Si llega desde un aviso no trae el nombre (ni la foto): salen del perfil.
         persona = runCatching { c.api.persona(conId) }.getOrNull()
         val q = nombre.ifEmpty { persona?.nombre.orEmpty() }
         try {
-            lineas.clear(); lineas.addAll(c.api.privados(conId).privados.map { it.linea(yo, q) })
+            val ps = c.api.privados(conId).privados
+            lineas.clear(); lineas.addAll(ps.map { it.linea(yo, q) })
+            hayMas = ps.size >= MIOS_PAGINA
         } catch (e: Throwable) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             error = mensajeDe(e)
@@ -489,7 +558,14 @@ fun Privado(ir: Ir, conId: String, nombre: String) {
                     )
                 }
             }
-            MiosVistaHilo(lineas, cargado, error, escribe?.first, Modifier.weight(1f), foto = persona?.fotos?.firstOrNull().orEmpty())
+            MiosVistaHilo(lineas, cargado, error, escribe?.first, Modifier.weight(1f), foto = persona?.fotos?.firstOrNull().orEmpty(), hayMas = hayMas) {
+                // Los anteriores al primero (GET …?antes=), arriba de todo.
+                val primero = lineas.firstOrNull()?.id ?: return@MiosVistaHilo
+                val viejas = runCatching { c.api.privados(conId, antes = primero).privados }.getOrNull()
+                if (viejas == null) { hayMas = false; return@MiosVistaHilo }
+                hayMas = viejas.size >= MIOS_PAGINA
+                lineas.addAll(0, viejas.filter { v -> lineas.none { it.id == v.id } }.map { it.linea(yo, quien) })
+            }
             MiosEntrada(abajo, {
                 val ahora = System.currentTimeMillis()
                 if (ahora - ultimoEscribiendo >= 2000) {

@@ -159,7 +159,7 @@ private val bordeSuaveOscuro = Color(0xFF3A3550)
 
 /**
  * Borrador del plan con los valores por defecto del README: Hoy 21:30, Somos 3 / Falta 1, con
- * aprobación, verificados y dirección oculta.
+ * aprobación y dirección oculta. Todos verifican el DNI: `soloVerificados` va siempre en true.
  */
 private class Borrador {
     var titulo by mutableStateOf("")
@@ -278,8 +278,9 @@ fun Crear(ir: Ir, editar: String? = null) {
                     if (d <= 0) {
                         b.cuando = 1
                     } else {
+                        // Más allá de 6 días se conserva el día (sale como un chip más): tocar la hora no lo adelanta.
                         b.cuando = 2
-                        b.dia = minOf(d, 6)
+                        b.dia = d
                     }
                 }
                 empiezaCargada = b.empieza()
@@ -529,10 +530,11 @@ private fun Paso1(b: Borrador, editando: Boolean, alLugar: () -> Unit) {
             T("Arranca en los próximos 30 minutos", 13f, 500, pal.texto2)
         } else {
             if (b.cuando == 2) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                (1..6).forEach { i ->
+                // Editando un plan a más de 6 días: su día va como séptimo chip, con el mes.
+                ((1..6).toList() + listOfNotNull(b.dia.takeIf { it > 6 })).forEach { i ->
                     val d = ZonedDateTime.now(ZonaAR).plusDays(i.toLong())
                     Chip(
-                        "${Fecha.diaCorto(d)} ${d.dayOfMonth}", b.dia == i, { b.dia = i }, Modifier.weight(1f),
+                        if (i > 6) "${d.dayOfMonth}/${d.monthValue}" else "${Fecha.diaCorto(d)} ${d.dayOfMonth}", b.dia == i, { b.dia = i }, Modifier.weight(1f),
                         gelOff = if (pal.oscuro) Gels.chipOscuro else Gels.off, colorOff = pal.texto, tam = 12f, padH = 4.dp, radio = 12.dp,
                     )
                 }
@@ -767,8 +769,6 @@ private fun Paso3(b: Borrador, alCosto: () -> Unit, alFoto: () -> Unit) {
         Modifier.fillMaxWidth().background(if (pal.oscuro) C.oscuro3 else C.blanco, RoundedCornerShape(20.dp))
             .border(1.5.dp, if (pal.oscuro) bordeSuaveOscuro else bordeSuave, RoundedCornerShape(20.dp)),
     ) {
-        FilaInterruptor("Solo verificados", b.verificados) { b.verificados = it }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(pal.separador))
         FilaInterruptor("Ocultar dirección hasta aceptar", b.ocultar) { b.ocultar = it }
         Box(Modifier.fillMaxWidth().height(1.dp).background(pal.separador))
         Row(Modifier.fillMaxWidth().tocable(alCosto).padding(horizontal = 14.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
