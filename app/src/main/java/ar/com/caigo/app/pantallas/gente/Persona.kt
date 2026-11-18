@@ -113,13 +113,17 @@ private fun PerfilPersonaClaro(ir: Ir, id: String, desde: String) {
     val esCitas = desde.endsWith("citas")
     val planInvita = desde.removePrefix("invitacion:").takeIf { desde.startsWith("invitacion:") }
 
-    fun accion(f: suspend () -> Unit) = alcance.launch {
+    fun lanzarAccion(f: suspend () -> Unit) = alcance.launch {
         try {
             f()
         } catch (e: Throwable) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             avisos.error(mensajeDe(e))
         }
+    }
+    // Sin DNI se mira el perfil; sumar, pasar, invitar o responder pide verificarse antes.
+    fun accion(f: suspend () -> Unit) {
+        if (c.conDni(ir, "gente")) lanzarAccion(f)
     }
     val modo = if (esCitas) "citas" else "gente"
 
@@ -179,6 +183,21 @@ private fun PerfilPersonaClaro(ir: Ir, id: String, desde: String) {
                     Estadistica("${p.planes}", "planes", Modifier.weight(1f))
                     Estadistica(if (p.asistencia.de > 0) "${(p.asistencia.fue * 100 + p.asistencia.de / 2) / p.asistencia.de}%" else "—", "asistencia", Modifier.weight(1f))
                     Estadistica(if (p.verificada) "DNI" else "Selfie", "verificado", Modifier.weight(1f))
+                }
+                // Nivel y hasta 3 insignias (la API ya las recorta; ninguna si las ocultó). Sin racha.
+                val l = p.logros
+                if (l != null && l.nivel.isNotEmpty() && !(l.nivel == "Nuevo" && l.insignias.isEmpty())) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.background(C.lima, RoundedCornerShape(13.dp)).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            T(l.nivel, 13f, 800, C.carbon, unRenglon = true)
+                        }
+                        // Las insignias con su chip propio (no como un gusto), con el detalle para el lector de pantalla.
+                        l.insignias.take(3).forEach { i ->
+                            ar.com.caigo.app.pantallas.planes.ChipInsignia(
+                                i.nombre, Modifier.align(Alignment.CenterVertically).semantics { contentDescription = "${i.nombre}. ${i.detalle}" },
+                            )
+                        }
+                    }
                 }
                 p.prompts.filter { it.r.isNotEmpty() }.forEach { pr ->
                     TarjetaPerfil {
@@ -254,7 +273,7 @@ private fun PerfilPersonaClaro(ir: Ir, id: String, desde: String) {
                                 }
                             }
                         }) { Icono(I.mas, 32.dp, C.carbon, 3.4f) }
-                        GenteBotonRedondo(60.dp, genteGelVioletaRedondo, "Invitar a un plan", accion = { invitando = true }) {
+                        GenteBotonRedondo(60.dp, genteGelVioletaRedondo, "Invitar a un plan", accion = { if (c.conDni(ir, "gente")) invitando = true }) {
                             Icono(I.calendarioSimple, 24.dp, C.blanco, 2.4f)
                         }
                     }
@@ -285,7 +304,7 @@ private fun PerfilPersonaClaro(ir: Ir, id: String, desde: String) {
                         Modifier.weight(1f), alto = 62.dp, radio = 22.dp, icono = I.mas, iconoTrazo = 4f, iconoTam = 18.dp,
                     )
                 }
-                else -> Cta("Invitar a un plan", { invitando = true }, Modifier.fillMaxWidth(), gel = Gels.violeta, color = C.blanco, alto = 58.dp, icono = I.calendarioSimple, iconoTrazo = 2.4f, iconoTam = 20.dp)
+                else -> Cta("Invitar a un plan", { if (c.conDni(ir, "gente")) invitando = true }, Modifier.fillMaxWidth(), gel = Gels.violeta, color = C.blanco, alto = 58.dp, icono = I.calendarioSimple, iconoTrazo = 2.4f, iconoTam = 20.dp)
             }
         }
         if (invitando) GenteHojaInvitar(ir, p.id, p.nombre, { invitando = false }) { plan ->

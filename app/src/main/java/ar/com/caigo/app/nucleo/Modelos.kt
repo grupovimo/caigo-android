@@ -24,13 +24,27 @@ data class PersonaCorta(
     val organizador: Boolean = false,
     /** Ya hizo check-in (sólo en la lista de los que van). */
     val llego: Boolean = false,
+    /** Promedio de las caritas de sus planes (sólo de quien organiza, con 3 o más). */
+    val caritas: Caritas? = null,
+    /** «Anfitrión»: sus planes se hacen (sólo en quien organiza). */
+    val anfitrion: Boolean = false,
+    /** Faltazos en los últimos 30 días, si son 2 o más (sólo en las solicitudes pendientes). */
+    val faltazos: Int = 0,
 )
 
 @Serializable
 data class Direccion(val texto: String = "", val lat: Double = 0.0, val lng: Double = 0.0)
 
 @Serializable
-data class LugarCorto(val id: String = "", val slug: String = "", val nombre: String = "", val zona: String = "", val foto: String = "")
+data class LugarCorto(
+    val id: String = "",
+    val slug: String = "",
+    val nombre: String = "",
+    val zona: String = "",
+    val foto: String = "",
+    /** Beneficio del lugar para Habitué o más ("" si no tiene). */
+    val beneficioNivel: String = "",
+)
 
 @Serializable
 data class Plan(
@@ -83,12 +97,23 @@ data class Plan(
     val destacado: Boolean = false,
     /** Sólo para quien organiza: "" normal, "revision" (lo mira el equipo) u "oculto" (nadie más lo ve). */
     val moderacion: String = "",
+    /** La línea de confianza de la tarjeta («Todos verificados · Organiza Martín (9/10) · Van 2 chicas»). */
+    val confianza: Confianza = Confianza(),
+    /** Lo de quien mira si está en el plan o en la lista de espera (día del plan, después). */
+    val mio: Mio? = null,
 ) {
     /** Plan de un lugar aliado con entrada o seña: el botón es "Entrada" en vez de "Sumarme". */
     val conEntrada: Boolean get() = cobro == "entrada" || cobro == "sena"
     val adentro: Boolean get() = miEstado == "aceptada" || miEstado == "organizador"
     val esMio: Boolean get() = miEstado == "organizador"
 }
+
+/**
+ * La línea de confianza de la tarjeta (`confianza` de planes.go). Caigo no guarda el género y nunca dice
+ * cuántas chicas van: sólo si el plan es «Solo mujeres».
+ */
+@Serializable
+data class Confianza(val todosVerificados: Boolean = false, val soloChicas: Boolean = false)
 
 @Serializable
 data class Planes(val planes: List<Plan> = emptyList())
@@ -170,7 +195,11 @@ data class Codigo(val codigo: String = "")
 data class Link(val link: String = "")
 
 @Serializable
-data class Nuevo(val nuevo: Plan? = null)
+data class Nuevo(
+    val nuevo: Plan? = null,
+    /** Con quiénes quedó mutuo al responder «¿Volverías?»: ya pueden hablar por privado. */
+    val mutuos: List<PersonaCorta> = emptyList(),
+)
 
 @Serializable
 data class Opinion(val usuarioId: String, val si: Boolean)
@@ -208,10 +237,14 @@ data class Perfil(
     val avisos: AjustesAvisos = AjustesAvisos(),
     /** Teléfono o mail del contacto de confianza. */
     val contactoConfianza: String = "",
+    /** Contactos de confianza (hasta 3): «¿Todo bien?» el día del plan. */
+    val contactosConfianza: List<Contacto> = emptyList(),
     /** Sus próximos planes que quien mira puede ver (GET /v1/personas/{id}). */
     val proximos: List<ProximoPlan> = emptyList(),
     /** Lo que le falta al perfil propio (GET /v1/yo): edad, ciudad, zona, bio, fotos, intereses. */
     val faltan: List<String> = emptyList(),
+    /** Nivel, insignias y racha (racha y comodín, sólo en el propio). */
+    val logros: Logros? = null,
 ) {
     /** Le falta algo del alta (nombre, teléfono o selfie). */
     val altaIncompleta: Boolean get() = nombre.isEmpty() || telefono.isEmpty() || !selfie
@@ -219,7 +252,12 @@ data class Perfil(
 
 /** Ajustes de avisos push (contrato §3). Por defecto, los dos prendidos. */
 @Serializable
-data class AjustesAvisos(val planesCerca: Boolean = true, val tuGente: Boolean = true)
+data class AjustesAvisos(
+    val planesCerca: Boolean = true,
+    val tuGente: Boolean = true,
+    /** «Esta semana en tu ciudad», los lunes. */
+    val semana: Boolean = true,
+)
 
 /**
  * Lo que la persona confirma, sólo para un pedido (sumarse, comprar entrada, aceptar una
@@ -265,6 +303,39 @@ data class CambiosPerfil(
     val fotos: List<String>? = null,
     val avisos: AjustesAvisos? = null,
     val contactoConfianza: String? = null,
+    val contactosConfianza: List<Contacto>? = null,
+    val ocultarInsignias: Boolean? = null,
+)
+
+/** Una insignia («En cancha», «Local de X», «Anfitrión»…). */
+@Serializable
+data class Insignia(val id: String = "", val nombre: String = "", val detalle: String = "")
+
+/**
+ * Lo que se gana yendo (GET /v1/yo y /v1/personas/{id}): nivel (Nuevo, Habitué, De fierro, Leyenda), planes que
+ * cuentan, cuánto falta para el siguiente, racha semanal y comodín (sólo el propio) e insignias.
+ */
+@Serializable
+data class Logros(
+    val nivel: String = "",
+    val planes: Int = 0,
+    val siguiente: String? = null,
+    val faltan: Int? = null,
+    val racha: Int? = null,
+    val comodin: Boolean? = null,
+    val insignias: List<Insignia> = emptyList(),
+    val anfitrion: Boolean = false,
+    val ocultas: Boolean = false,
+)
+
+/** «Traé a alguien» (GET /v1/yo/invitar). */
+@Serializable
+data class Referidos(
+    val codigo: String = "",
+    val link: String = "",
+    val invitados: Int = 0,
+    val premiados: Int = 0,
+    val puedeUsarCodigo: Boolean = false,
 )
 
 /** Mi gente: la API devuelve perfiles; las listas usan la vista corta. */

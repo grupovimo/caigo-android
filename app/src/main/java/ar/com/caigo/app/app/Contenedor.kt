@@ -53,6 +53,14 @@ sealed interface Destino {
     data class Web(val url: String) : Destino
 }
 
+/** Un plan al que la persona acaba de entrar (aceptada): lo festeja la raíz, a pantalla completa. */
+data class PlanFestejado(
+    val plan: ar.com.caigo.app.nucleo.Plan,
+    /** Con cuántos entró (para «Somos N de M»). */
+    val cantidad: Int,
+    val id: Long = System.nanoTime(),
+)
+
 /**
  * Todo lo que comparten las pantallas: API, sesión, tiempo real, ubicación y destinos pendientes
  * (como Contenedor.swift del iPhone).
@@ -75,14 +83,32 @@ class Contenedor(val ctx: Context) {
     /** Estado de Plus (se recarga al entrar a Perfil, al comprar y en el paywall). */
     val plus = MutableStateFlow<EstadoPlus?>(null)
     val destino = MutableStateFlow<Destino?>(null)
-    /** Sube cada vez que la API responde 403 `falta_dni`: la navegación lleva a la verificación con DNI. */
+    /** Sube cada vez que la API responde 403 `falta_dni`: la navegación apila PedirDni. */
     val faltaDni = MutableStateFlow(0)
+    /** «¡Estás adentro!»: el plan al que se acaba de entrar (lo muestra la raíz; null, nada). */
+    val festejo = MutableStateFlow<PlanFestejado?>(null)
     /** Resultado del último tap en una placa (pantalla "Adentro"). */
     var ultimoTap: ResultadoTap? = null
     /** Placa leída (link o NFC) que la pantalla de Caigo Tap tiene que mandar a la API. */
     var tapPendiente: Destino.Tap? = null
     /** Mientras la pantalla de Caigo Tap está abierta, MainActivity lee placas NFC en primer plano. */
     val nfcActivo = MutableStateFlow(false)
+
+    /**
+     * Sin el DNI verificado se mira (18/11); para hacer algo con otra gente (sumarse, crear, chatear, la
+     * gente) antes se pide, con PedirDni. true: puede seguir; false: ya apiló PedirDni. Con el perfil sin
+     * cargar no se frena: la API responde 403 `falta_dni` y la navegación hace lo mismo.
+     */
+    fun conDni(ir: Ir, motivo: String, planId: String? = null): Boolean {
+        if (yo.value?.verificada != false) return true
+        // El «Sumarme» que se tocó queda pendiente: al volver al plan, verificada y con el perfil listo, se hace solo.
+        if (motivo == "sumarte" && planId != null) sumarAlVolver = planId
+        ir.pedirDni(motivo, planId)
+        return false
+    }
+
+    /** El plan al que la persona quiso sumarse antes de verificarse (DetallePlan lo retoma). */
+    var sumarAlVolver: String? = null
 
     /** Recarga mi perfil; si falla, queda el que había. */
     suspend fun recargarYo(): Perfil? = runCatching { api.yo() }.getOrNull()?.also { yo.value = it } ?: yo.value
@@ -167,6 +193,7 @@ class Contenedor(val ctx: Context) {
         destino.value = null
         tapPendiente = null
         ultimoTap = null
+        festejo.value = null
     }
 
     fun tienePermisoUbicacion() =
@@ -236,6 +263,7 @@ class Contenedor(val ctx: Context) {
                 "explorar", "mapa" -> Destino.Seccion(Pestana.Explorar)
                 "mis" -> Destino.Seccion(Pestana.Mis)
                 "crear" -> Destino.Ruta("crear")
+                "semana" -> Destino.Ruta("semana")
                 "verificar" -> Destino.Ruta("verificacion")
                 "mensajes" -> if (id == null || id == "privados") Destino.Ruta("privados") else Destino.Ruta("privado", id)
                 "persona" -> if (id != null) Destino.Ruta("persona", id) else Destino.Web(url)
@@ -253,6 +281,7 @@ class Contenedor(val ctx: Context) {
                     sub == "chat" -> Destino.Ruta("chat", id)
                     sub == "editar" -> Destino.Ruta("editarPlan", id)
                     sub == "repetimos" -> Destino.Ruta("repetimos", id)
+                    sub == "fotos" -> Destino.Ruta("fotos", id)
                     sub == "solicitudes" -> Destino.Ruta("solicitudes", id)
                     else -> Destino.Web(url)
                 }

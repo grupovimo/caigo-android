@@ -31,6 +31,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -170,6 +173,11 @@ fun Perfil(ir: Ir) {
     var verif by remember { mutableStateOf<EstadoVerificacion?>(null) }
     var plus by remember { mutableStateOf<EstadoPlus?>(null) }
     var refrescando by remember { mutableStateOf(false) }
+    // «Traé a alguien» abierta, lo que trae la API y el código de quien me invitó.
+    var trayendo by remember { mutableStateOf(false) }
+    var referidos by remember { mutableStateOf<ar.com.caigo.app.nucleo.Referidos?>(null) }
+    var codigo by remember { mutableStateOf("") }
+    var usandoCodigo by remember { mutableStateOf(false) }
 
     suspend fun cargar() {
         fallo = c.recargarYo() == null
@@ -183,7 +191,52 @@ fun Perfil(ir: Ir) {
         }
     }
     LaunchedEffect(Unit) { cargar() }
-    OcultarTabBar(opciones || borrando)
+    OcultarTabBar(opciones || borrando || trayendo)
+    LaunchedEffect(trayendo) {
+        if (!trayendo) return@LaunchedEffect
+        try {
+            referidos = c.api.referidos()
+        } catch (e: Throwable) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            avisos.error(ar.com.caigo.app.nucleo.mensajeDe(e))
+            trayendo = false
+        }
+    }
+
+    // PATCH /v1/yo `ocultarInsignias`: se ve al toque; si la API falla, vuelve.
+    fun ocultarInsignias(v: Boolean) {
+        val antes = c.yo.value ?: return
+        val l = antes.logros ?: return
+        c.yo.value = antes.copy(logros = l.copy(ocultas = v))
+        alcance.launch {
+            try {
+                c.yo.value = c.api.actualizarYo(ar.com.caigo.app.nucleo.CambiosPerfil(ocultarInsignias = v))
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                c.yo.value = antes
+                avisos.error(ar.com.caigo.app.nucleo.mensajeDe(e))
+            }
+        }
+    }
+
+    fun usarCodigo() {
+        val cod = codigo.trim()
+        if (cod.isEmpty() || usandoCodigo) return
+        usandoCodigo = true
+        alcance.launch {
+            try {
+                c.api.usarCodigo(cod)
+                codigo = ""
+                avisos.ok("Listo.")
+                referidos = runCatching { c.api.referidos() }.getOrNull() ?: referidos
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                avisos.error(ar.com.caigo.app.nucleo.mensajeDe(e))
+            } finally {
+                usandoCodigo = false
+            }
+        }
+    }
 
     Pantalla { arriba, _ ->
         val y = yo
@@ -224,7 +277,8 @@ fun Perfil(ir: Ir) {
                 // Verificación y seguridad.
                 val dni = if (y.verificada) "aprobada" else verif?.dni ?: "ninguna"
                 Row(
-                    Modifier.fillMaxWidth().toque(alBajar = 2.dp) { ir.verificacion() }
+                    // Sin DNI (ni uno en revisión): la pantalla amable de antes del DNI.
+                    Modifier.fillMaxWidth().toque(alBajar = 2.dp) { if (dni == "aprobada" || dni == "pendiente") ir.verificacion() else ir.pedirDni("gente") }
                         .gel(24.dp, if (p.oscuro) Gels.tarjetaOscura else gelVerificacion)
                         .padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -237,7 +291,7 @@ fun Perfil(ir: Ir) {
                             when (dni) {
                                 "aprobada" -> "Tu DNI ya está verificado"
                                 "pendiente" -> "Ya estamos revisando tu DNI."
-                                else -> "Falta tu DNI para usar Caigo"
+                                else -> "Verificá tu DNI"
                             },
                             12f, 600, p.texto2,
                         )
@@ -276,8 +330,12 @@ fun Perfil(ir: Ir) {
                     }
                 }
 
+                // Con logros: cabecera sobria (nivel y planes que cuentan, asistencia, racha, insignias y lo que falta).
+                // Sin DNI, lo que falta va primero (la tarjeta de verificación) y lo de ir a planes, después de verificarse.
+                val logros = y.logros?.takeIf { y.verificada }
+                if (logros != null) CabeceraLogros(y, logros)
                 // Asistencia real y planes (las dos del mismo alto).
-                Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                else Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     val a = y.asistencia
                     Column(Modifier.weight(1.2f).fillMaxHeight().gel(22.dp, miosOscura).padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         T(if (a.de > 0) "${a.fue * 100 / a.de}%" else "—", 40f, 800, C.lima, alto = 1f)
@@ -288,6 +346,21 @@ fun Perfil(ir: Ir) {
                         T("${y.planes}", 40f, 800, if (p.oscuro) C.lima else C.violetaTexto, alto = 1f)
                         T("Planes", 13f, 600)
                         T(if (y.organizados == 1) "1 organizado" else "${y.organizados} organizados", 12f, 400, p.texto2)
+                    }
+                }
+
+                if (y.verificada) MiosGrupo {
+                    MiosFila(I.gente, "Traé a alguien", ultima = logros == null) { codigo = ""; trayendo = true }
+                    // Toda la fila es el interruptor (y se lee como uno, con su nombre).
+                    if (logros != null) Row(
+                        Modifier.fillMaxWidth()
+                            .toggleable(value = logros.ocultas, role = Role.Switch, onValueChange = { ocultarInsignias(it) })
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Icono(I.ojoTachado, 20.dp, if (p.oscuro) C.lima else C.violeta, 2f)
+                        T("Ocultar mis insignias", 14f, 800, modifier = Modifier.weight(1f))
+                        ar.com.caigo.app.piezas.Interruptor(logros.ocultas, { ocultarInsignias(it) }, Modifier.clearAndSetSemantics {})
                     }
                 }
 
@@ -333,6 +406,16 @@ fun Perfil(ir: Ir) {
                     Icono(I.adelante, 20.dp, p.texto, 2.2f)
                 }
 
+                // Gente y Citas salieron de la cabecera de Ahora (18/11): se abren desde acá, sin protagonismo.
+                // Citas, sólo para quien eligió esa intención. Sin DNI, antes «verificamos que seas vos».
+                val citas = y.intenciones.contains("citas")
+                MiosGrupo {
+                    MiosFila(I.usuario, "Conocer gente", "Gente cerca que sale a lo mismo que vos", ultima = !citas) {
+                        if (c.conDni(ir, "gente")) ir.mazo("gente")
+                    }
+                    if (citas) MiosFila(I.corazonChico, "Citas", ultima = true) { if (c.conDni(ir, "gente")) ir.mazo("citas") }
+                }
+
                 // Al final, la acción destructiva (con el texto de peligro de «Cancelar el plan»).
                 T(
                     "Borrar mi cuenta", 15f, 700, C.coral2,
@@ -347,6 +430,37 @@ fun Perfil(ir: Ir) {
             I.sol, { opciones = true }, Modifier.align(Alignment.TopEnd).padding(top = arriba + 8.dp, end = 20.dp),
             iconoTam = 20.dp, trazo = 2f, gel = if (p.oscuro) Gels.chipOscuro else Gels.chipClaro, color = p.texto,
         )
+        // «Traé a alguien»: el link para compartir, el premio, cuántos invité y, en los primeros días, el código de
+        // quien me invitó (POST /v1/yo/invitado).
+        MiosHoja(trayendo, { trayendo = false }, "Traé a alguien") {
+            val r = referidos
+            if (r != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(Modifier.weight(1f).height(52.dp).gel(16.dp, Gels.chip(p)).padding(horizontal = 14.dp), contentAlignment = Alignment.CenterStart) {
+                        T(r.link, 14f, 700, unRenglon = true)
+                    }
+                    Cta("Compartir", { Sistema.compartir(ctx, r.link) }, Modifier.width(124.dp), gel = Gels.violeta, alto = 52.dp, radio = 16.dp, tam = 15f, color = C.blanco)
+                }
+                T("Cuando vaya a su primer plan, los dos tienen una semana de Plus.", 14f, 400, p.texto2, alto = 1.45f)
+                T("${r.invitados} ${if (r.invitados == 1) "invitado" else "invitados"} · ${r.premiados} ya fueron", 13f, 700)
+                if (r.puedeUsarCodigo) {
+                    T("¿Te invitó alguien? Poné su código", 14f, 700, modifier = Modifier.padding(top = 4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        MiosCampo(
+                            codigo, { codigo = it }, Modifier.weight(1f), placeholder = "Código", maximo = 24,
+                            mayusculas = androidx.compose.ui.text.input.KeyboardCapitalization.None,
+                            teclado = androidx.compose.ui.text.input.KeyboardType.Ascii,
+                        )
+                        Cta(
+                            "Listo", { usarCodigo() }, Modifier.width(100.dp), alto = 60.dp, radio = 18.dp, tam = 16f, color = C.carbon,
+                            habilitado = codigo.trim().isNotEmpty(), cargando = usandoCodigo,
+                        )
+                    }
+                }
+            } else {
+                Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { Puntitos(p.acento) }
+            }
+        }
         MiosHoja(opciones, { opciones = false }, "Tu cuenta") {
             MiosGrupo {
                 MiosFila(I.usuario, "Editar perfil") { opciones = false; ir.editarPerfil() }
@@ -465,10 +579,11 @@ fun MiGente(ir: Ir) {
 
 /**
  * Editar perfil: fotos, nombre, bio, trabajo, zona, preguntas e intereses (PATCH /v1/yo).
- * Con [completar] (al final del alta): «Completá tu perfil», sin volver y con los mínimos de la API.
+ * Con [completar]: «Completá tu perfil», con los mínimos de la API: después del DNI del primer «Caigo»
+ * ([apilado]: al guardar vuelve a donde estaba) o como ruta vieja del alta (al guardar, a Ahora).
  */
 @Composable
-fun EditarPerfil(ir: Ir, completar: Boolean = false) {
+fun EditarPerfil(ir: Ir, completar: Boolean = false, apilado: Boolean = false) {
     val c = LocalApp.current
     val p = LocalPaleta.current
     val ctx = LocalContext.current
@@ -502,9 +617,9 @@ fun EditarPerfil(ir: Ir, completar: Boolean = false) {
         alcance.launch {
             try {
                 val jpeg = withContext(Dispatchers.IO) {
-                    val b = runCatching { ctx.contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it) } }.getOrNull()
+                    // Achicada al decodificar y derecha según el EXIF (jpegDeFoto, Camara.kt).
+                    ar.com.caigo.app.piezas.jpegDeFoto(ctx, uri)
                         ?: throw ar.com.caigo.app.nucleo.ErrorApi(0, ar.com.caigo.app.nucleo.Problema(detail = "No pudimos leer esa foto. Probá con otra."))
-                    jpegDe(b, 0, 86, 1600)
                 }
                 fotos.add(c.api.subir("foto", jpeg).url)
             } catch (e: Throwable) {
@@ -618,7 +733,7 @@ fun EditarPerfil(ir: Ir, completar: Boolean = false) {
                 )
             }
             Cta(
-                if (completar) "Listo, entrar" else "Guardar", {
+                if (completar) (if (apilado) "Listo, seguir" else "Listo, entrar") else "Guardar", {
                     guardando = true
                     alcance.launch {
                         try {
@@ -631,7 +746,7 @@ fun EditarPerfil(ir: Ir, completar: Boolean = false) {
                             )
                             if (completar) {
                                 avisos.ok("¡Listo! Ya podés sumarte a planes.")
-                                ir.principal(Pestana.Ahora)
+                                if (apilado) ir.atras() else ir.principal(Pestana.Ahora)
                             } else {
                                 avisos.ok("Listo, actualizamos tu perfil.")
                                 ir.atras()
@@ -656,5 +771,40 @@ private fun Etiquetado(etiqueta: String, campo: @Composable () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         T(etiqueta, 14f, 700)
         campo()
+    }
+}
+
+/**
+ * Cabecera sobria de lo que se gana yendo: nivel y planes que cuentan, la asistencia real, la racha (desde 2
+ * semanas), las insignias en chips chicos y cuánto falta para el siguiente nivel. Sin puntos ni festejos.
+ */
+@Composable
+private fun CabeceraLogros(y: ar.com.caigo.app.nucleo.Perfil, l: ar.com.caigo.app.nucleo.Logros) {
+    val a = y.asistencia
+    Column(Modifier.fillMaxWidth().gel(22.dp, miosOscura).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        T(ar.com.caigo.app.nucleo.TextoLogros.cabecera(l), 15f, 800, C.blancoCalido, unRenglon = true)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            T(if (a.de > 0) "${a.fue * 100 / a.de}%" else "—", 40f, 800, C.lima, alto = 1f)
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                T("Asistencia real", 13f, 600, C.blancoCalido)
+                T(if (a.de > 0) "${a.fue} de ${a.de} con check-in" else "Todavía sin planes con check-in", 12f, 400, C.apagado2)
+            }
+        }
+        ar.com.caigo.app.nucleo.TextoLogros.racha(l)?.let { T(it, 12f, 600, C.apagado2) }
+        if (l.insignias.isNotEmpty()) {
+            // Cada insignia con su chip propio y el detalle a la vista (no escondido para el lector de pantalla).
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                l.insignias.forEach { i ->
+                    Row(
+                        Modifier.semantics(mergeDescendants = true) {},
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        ar.com.caigo.app.pantallas.planes.ChipInsignia(i.nombre, sobreOscuro = true)
+                        T(i.detalle, 12f, 400, C.apagado2, unRenglon = true)
+                    }
+                }
+            }
+        }
+        ar.com.caigo.app.nucleo.TextoLogros.siguiente(l)?.let { T(it, 12f, 400, C.apagado2) }
     }
 }

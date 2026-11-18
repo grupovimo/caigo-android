@@ -145,6 +145,15 @@ class Api(
     suspend fun version(): Version = get("/v1/version")
     suspend fun reportar(r: Reporte) = mandar("POST", "/v1/reportes", r)
 
+    /** «Traé a alguien»: mi código, el link y cuántos invité. */
+    suspend fun referidos(): Referidos = get("/v1/yo/invitar")
+
+    @kotlinx.serialization.Serializable
+    data class CodigoReferido(val codigo: String)
+
+    /** El código de quien me invitó (204; 404 si no existe, 409 `propio` | `ya_invitado` | `tarde`). */
+    suspend fun usarCodigo(codigo: String) = mandar("POST", "/v1/yo/invitado", CodigoReferido(codigo))
+
     // ——— Planes ———
 
     /** `q` (≥ 2 letras) busca en título, zona y lugar; `ciudad` se usa cuando no hay ubicación. */
@@ -185,6 +194,12 @@ class Api(
     /** Con Plus, un plan propio por semana sale primero en Ahora y Explorar. */
     suspend fun destacar(id: String) = sinCuerpo("POST", "/v1/planes/$id/destacar")
 
+    /** «No me interesa»: el plan sale de Ahora y Explorar hasta el fin del día (204). */
+    suspend fun ocultarPlan(id: String) = sinCuerpo("POST", "/v1/planes/$id/ocultar")
+
+    /** «Deshacer» de «No me interesa» (204). */
+    suspend fun mostrarPlan(id: String) = sinCuerpo("DELETE", "/v1/planes/$id/ocultar")
+
     @kotlinx.serialization.Serializable
     data class Sumarse(val cantidad: Int, val mensaje: String = "", val mujer: Boolean = false, val diversidad: Boolean = false)
 
@@ -209,6 +224,48 @@ class Api(
 
     suspend fun repetimos(id: String, repetir: Boolean, volveria: List<Opinion>): Nuevo = enviar("POST", "/v1/planes/$id/repetimos", Repetir(repetir, volveria))
     suspend fun enVivo(id: String): Link = decodificar(crudo("POST", url("/v1/planes/$id/en-vivo")))
+
+    // ——— El día del plan (informe del 18/11) ———
+
+    /** «¿Seguís yendo?» → Voy. («Me bajo» es [salir].) */
+    suspend fun confirmo(id: String) = sinCuerpo("POST", "/v1/planes/$id/confirmo")
+
+    @kotlinx.serialization.Serializable
+    data class Espera(val cantidad: Int = 1, val mujer: Boolean = false, val diversidad: Boolean = false)
+
+    /** Plan completo: a la lista de espera (409 `hay_lugar` si hay lugar). */
+    suspend fun esperar(id: String, cantidad: Int = 1, confirma: Confirma = Confirma()): EsperaMia =
+        enviar("POST", "/v1/planes/$id/espera", Espera(cantidad, confirma.mujer, confirma.diversidad))
+    suspend fun dejarDeEsperar(id: String) = sinCuerpo("DELETE", "/v1/planes/$id/espera")
+
+    suspend fun todoBien(id: String): TodoBien = get("/v1/planes/$id/todo-bien")
+
+    @kotlinx.serialization.Serializable
+    data class ElegirContacto(val contacto: Int)
+
+    /** «Avisale a mi contacto si no hago check-in» (índice de los contactos del perfil). */
+    suspend fun activarTodoBien(id: String, contacto: Int): TodoBien = enviar("POST", "/v1/planes/$id/todo-bien", ElegirContacto(contacto))
+    suspend fun apagarTodoBien(id: String) = sinCuerpo("DELETE", "/v1/planes/$id/todo-bien")
+
+    @kotlinx.serialization.Serializable
+    data class Calificar(val repetir: Boolean, val volveria: List<Opinion>, val carita: Int? = null)
+
+    /** «¿Repetimos?» con la carita (1 a 5, privada). Devuelve el plan nuevo y con quiénes quedó mutuo. */
+    suspend fun repetimos(id: String, repetir: Boolean, volveria: List<Opinion>, carita: Int?): Nuevo =
+        enviar("POST", "/v1/planes/$id/repetimos", Calificar(repetir, volveria, carita))
+
+    suspend fun fotosPlan(id: String): FotosPlan = get("/v1/planes/$id/fotos")
+    suspend fun subirFotoPlan(id: String, jpeg: ByteArray): FotoPlan =
+        decodificar(crudo("POST", url("/v1/planes/$id/fotos"), jpeg.toRequestBody("image/jpeg".toMediaType())))
+    suspend fun borrarFotoPlan(id: String, foto: String) = sinCuerpo("DELETE", "/v1/planes/$id/fotos/$foto")
+    /** motivo: "salgo_yo" (quien aparece y no quiere estar: se oculta al instante) o "inapropiada". */
+    suspend fun reportarFotoPlan(id: String, foto: String, motivo: String = "inapropiada") =
+        sinCuerpo("POST", "/v1/planes/$id/fotos/$foto/reportar?motivo=$motivo")
+
+    /** «Marcar que vino»: quien organiza corrige a alguien que fue y no tocó «Llegué». */
+    suspend fun marcarVino(id: String, persona: String) = sinCuerpo("POST", "/v1/planes/$id/personas/$persona/vino")
+
+    suspend fun semana(): Semana = get("/v1/semana")
 
     // ——— Gente, Citas, invitaciones ———
 
@@ -332,18 +389,26 @@ class Api(
     }
 }
 
-/** Los filtros finos de Ahora/Explorar (Plus). Sin Plus, la API responde 403 `plus`. */
+/**
+ * Los filtros de Ahora/Explorar. Los de seguridad (`verificados`, `chicas`: «Sólo chicas») son gratis
+ * siempre; los finos (faltan, edad de quien organiza, sólo gratis) son de Plus: sin Plus, 403 `plus`.
+ */
 data class FiltrosFinos(
     val verificados: Boolean = false,
+    val chicas: Boolean = false,
     val faltan: Int? = null,
     val edadDesde: Int? = null,
     val edadHasta: Int? = null,
     val gratis: Boolean = false,
 ) {
-    val activos: Boolean get() = verificados || faltan != null || edadDesde != null || edadHasta != null || gratis
+    val activos: Boolean get() = verificados || chicas || dePlus
+
+    /** Alguno de los que son de Plus. */
+    val dePlus: Boolean get() = faltan != null || edadDesde != null || edadHasta != null || gratis
 
     fun query(): Query = arrayOf(
         "verificados" to (if (verificados) "1" else null),
+        "chicas" to (if (chicas) "1" else null),
         "faltan" to faltan?.toString(),
         "edadDesde" to edadDesde?.toString(),
         "edadHasta" to edadHasta?.toString(),

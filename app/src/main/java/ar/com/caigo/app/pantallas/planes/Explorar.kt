@@ -61,6 +61,7 @@ import ar.com.caigo.app.piezas.fotoCategoria
 import ar.com.caigo.app.app.Ir
 import ar.com.caigo.app.app.LocalApp
 import ar.com.caigo.app.app.altoTabBar
+import kotlinx.coroutines.launch
 import ar.com.caigo.app.nucleo.Api
 import ar.com.caigo.app.nucleo.Categorias
 import ar.com.caigo.app.nucleo.Cupo
@@ -125,6 +126,8 @@ fun Explorar(ir: Ir) {
     var dia by rememberSaveable { mutableIntStateOf(0) }
     var busqueda by rememberSaveable { mutableStateOf("") }
     var verificados by rememberSaveable { mutableStateOf(false) }
+    /** «Sólo chicas» (planes «Solo mujeres»): seguridad, gratis siempre. */
+    var chicas by rememberSaveable { mutableStateOf(false) }
     var faltan by rememberSaveable { mutableStateOf<Int?>(null) }
     var edad by rememberSaveable { mutableIntStateOf(0) }
     var gratis by rememberSaveable { mutableStateOf(false) }
@@ -133,14 +136,21 @@ fun Explorar(ir: Ir) {
     var zonas by remember { mutableStateOf<List<String>>(emptyList()) }
     var punto by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var filtros by rememberSaveable { mutableStateOf(false) }
+    // «No me interesa» y su «Deshacer».
+    val ocultos = remember { PlanesOcultos() }
+    val avisos = ar.com.caigo.app.piezas.LocalAvisos.current
+    val vista = androidx.compose.ui.platform.LocalView.current
+    val alcance = androidx.compose.runtime.rememberCoroutineScope()
     var todos by rememberSaveable { mutableStateOf(false) }
     var semana by remember { mutableStateOf<List<Plan>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var vuelta by remember { mutableIntStateOf(0) }
 
     val conPlus = plus?.activo == true
-    // Los filtros finos son de Caigo Plus: sin Plus no se mandan (la API respondería 403 `plus`).
-    val finos = if (!conPlus) FiltrosFinos() else rangosEdad[edad].let { r -> FiltrosFinos(verificados, faltan, r.second, r.third, gratis) }
+    // Los de seguridad (verificados, sólo chicas) van siempre; los finos son de Caigo Plus: sin Plus no se
+    // mandan (la API respondería 403 `plus`).
+    val finos = if (!conPlus) FiltrosFinos(verificados, chicas)
+    else rangosEdad[edad].let { r -> FiltrosFinos(verificados, chicas, faltan, r.second, r.third, gratis) }
 
     LaunchedEffect(Unit) {
         if (c.plus.value == null) c.recargarPlus()
@@ -174,12 +184,13 @@ fun Explorar(ir: Ir) {
     }
 
     // La búsqueda la hace la API con `q` (título, zona y lugar).
-    val planes = semana.orEmpty()
+    val planes = ocultos.visibles(semana.orEmpty())
     val ahora = ZonedDateTime.now(ZonaAR)
     val delDia = planes.filter { pl -> Fecha.parse(pl.empiezaEn)?.let { Fecha.diasEntre(ahora, it) == dia } ?: false }
     val recurrente = planes.firstOrNull { it.recurrente }
     fun fechaDia(i: Int) = ahora.toLocalDate().plusDays(i.toLong()).atStartOfDay(ZonaAR)
 
+    Box(Modifier.fillMaxSize()) {
     PullToRefreshBox(false, { vuelta++ }, Modifier.fillMaxSize()) {
         LazyColumn(
             Modifier.fillMaxSize(),
@@ -197,7 +208,7 @@ fun Explorar(ir: Ir) {
                     ) {
                         PanelFiltros(
                             ir, conPlus, ciudad, { ciudad = it }, zonas, zona, { zona = it },
-                            verificados, { verificados = it }, faltan, { faltan = it }, edad, { edad = it }, gratis, { gratis = it },
+                            verificados, { verificados = it }, chicas, { chicas = it }, faltan, { faltan = it }, edad, { edad = it }, gratis, { gratis = it },
                         )
                     }
                 }
@@ -251,12 +262,26 @@ fun Explorar(ir: Ir) {
                         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         T("Todavía no hay planes para este día. ¿Armás uno?", 15f, 500, p.texto2, alinear = TextAlign.Center)
-                        Chip("Armá un plan", true, { ir.crear() })
+                        Chip("Armá un plan", true, { if (c.conDni(ir, "crear")) ir.crear() })
                     }
                 }
-                else -> items(if (todos) delDia else delDia.take(4), key = { it.id }) { Box(Modifier.padding(horizontal = 20.dp)) { FilaAgenda(it, ir) } }
+                else -> items(if (todos) delDia else delDia.take(4), key = { it.id }) { pl ->
+                    Box(Modifier.padding(horizontal = 20.dp)) {
+                        DeslizarPlan(
+                            24.dp,
+                            alCaigo = {
+                                alcance.launch {
+                                    if (planesCaigo(c, ir, avisos, pl) { ar.com.caigo.app.piezas.Sistema.vibrar(vista) } != null) vuelta++
+                                }
+                            },
+                            alNoMeInteresa = { ocultos.ocultar(c, avisos, pl) },
+                        ) { m -> FilaAgenda(pl, ir, m) }
+                    }
+                }
             }
         }
+    }
+    AvisoDeshacer(ocultos, altoTabBar())
     }
 }
 
@@ -306,13 +331,17 @@ private fun Tiles(categoria: String?, alElegir: (String?) -> Unit) {
     }
 }
 
-/** Panel de filtros: ciudad para todos; los finos con el chip «Plus». Sin Plus, tocarlos abre el paywall. */
+/**
+ * Panel de filtros: ciudad y «Sólo chicas» para todos (la seguridad no se cobra); los finos con el chip
+ * «Plus». Sin Plus, tocarlos abre el paywall.
+ */
 @Composable
 private fun PanelFiltros(
     ir: Ir, conPlus: Boolean,
     ciudad: String?, alCiudad: (String?) -> Unit,
     zonas: List<String>, zona: String?, alZona: (String?) -> Unit,
     verificados: Boolean, alVerificados: (Boolean) -> Unit,
+    chicas: Boolean, alChicas: (Boolean) -> Unit,
     faltan: Int?, alFaltan: (Int?) -> Unit,
     edad: Int, alEdad: (Int) -> Unit,
     gratis: Boolean, alGratis: (Boolean) -> Unit,
@@ -321,20 +350,23 @@ private fun PanelFiltros(
     fun Separador() = Box(Modifier.fillMaxWidth().height(1.dp).background(C.lavanda))
 
     @Composable
-    fun Titulo(t: String, modifier: Modifier = Modifier) = Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    fun Titulo(t: String, modifier: Modifier = Modifier, plus: Boolean = true) = Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         T(t, 14f, 700, C.carbon, unRenglon = true)
-        if (!conPlus) PlanesChipPlus()
+        if (plus && !conPlus) PlanesChipPlus()
     }
 
+    /** `plus = false`: un filtro de seguridad, que anda sin Plus. */
     @Composable
-    fun FilaInterruptor(t: String, on: Boolean, alCambiar: (Boolean) -> Unit) =
+    fun FilaInterruptor(t: String, on: Boolean, alCambiar: (Boolean) -> Unit, plus: Boolean = true) {
+        val anda = conPlus || !plus
         Row(
-            Modifier.fillMaxWidth().tocable { if (conPlus) alCambiar(!on) else ir.plus("filtros") }.padding(horizontal = 16.dp, vertical = 14.dp),
+            Modifier.fillMaxWidth().tocable { if (anda) alCambiar(!on) else ir.plus("filtros") }.padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Titulo(t, Modifier.weight(1f))
-            Interruptor(conPlus && on, { if (conPlus) alCambiar(it) else ir.plus("filtros") })
+            Titulo(t, Modifier.weight(1f), plus)
+            Interruptor(anda && on, { if (anda) alCambiar(it) else ir.plus("filtros") })
         }
+    }
 
     @Composable
     fun FilaChips(t: String, opciones: List<String>, elegida: Int, elegir: (Int) -> Unit) =
@@ -363,6 +395,8 @@ private fun PanelFiltros(
                 }
             }
         }
+        Separador()
+        FilaInterruptor("Sólo chicas", chicas, alChicas, plus = false)
         Separador()
         FilaChips("Que falten al menos", listOf("Cualquiera", "1", "2", "3"), faltan ?: 0) { alFaltan(if (it > 0) it else null) }
         Separador()
@@ -409,12 +443,12 @@ private fun TarjetaRecurrente(p: Plan, ir: Ir) {
 
 /** Fila de la agenda: foto 64, "18:00 · PÁDEL", título, lugar y badge. */
 @Composable
-private fun FilaAgenda(p: Plan, ir: Ir) {
+private fun FilaAgenda(p: Plan, ir: Ir, modifier: Modifier = Modifier) {
     val pal = LocalPaleta.current
     val f = p.faltan
     val acento = if (pal.oscuro) C.lima else C.violeta
     Row(
-        Modifier.fillMaxWidth().semantics(mergeDescendants = true) { role = Role.Button }.toque(alBajar = 0.dp) { ir.plan(p.id) }
+        modifier.fillMaxWidth().semantics(mergeDescendants = true) { role = Role.Button }.toque(alBajar = 0.dp) { ir.plan(p.id) }
             .gel(24.dp, if (pal.oscuro) Gels.tarjetaOscura else gelTarjetaFila).padding(start = 10.dp, end = 14.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
