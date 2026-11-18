@@ -199,6 +199,7 @@ private fun ContenidoDetalle(ir: Ir, p: Plan, recargar: () -> Unit) {
     var sena by remember { mutableStateOf(leerModoCheckout(ctx, p.id) == "sena" && p.cobro == "sena") }
     var cancelandoPlan by remember { mutableStateOf(false) }
     var cancelandoEntrada by remember { mutableStateOf(false) }
+    var bajandome by remember { mutableStateOf(false) }
     val deLugar = esDeLugar(p)
     val link = "https://caigo.com.ar/p/${p.slug}"
 
@@ -254,18 +255,8 @@ private fun ContenidoDetalle(ir: Ir, p: Plan, recargar: () -> Unit) {
             add("Cancelar el plan" to { cancelandoPlan = true })
         }
         if (!p.esMio && p.adentro && deLugar && vivo) add("Cancelar mi entrada" to { cancelandoEntrada = true })
-        if (!p.esMio && (p.adentro || p.miEstado == "pendiente") && !deLugar) add("Bajarme del plan" to {
-            alcance.launch {
-                try {
-                    c.api.salir(p.id)
-                    avisos.ok("Listo, te bajaste del plan.")
-                    recargar()
-                } catch (e: Throwable) {
-                    if (e is kotlinx.coroutines.CancellationException) throw e
-                    avisos.error(mensajeDe(e))
-                }
-            }
-        })
+        // Con confirmación: era un toque y salía sin vuelta atrás (y el lugar lo podía tomar otro).
+        if (!p.esMio && (p.adentro || p.miEstado == "pendiente") && !deLugar) add((if (p.adentro) "Bajarme del plan" else "Retirar mi pedido") to { bajandome = true })
         if (!p.esMio) add("Reportar" to { reportando = true })
     }
 
@@ -274,7 +265,7 @@ private fun ContenidoDetalle(ir: Ir, p: Plan, recargar: () -> Unit) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.ime.exclude(WindowInsets.navigationBars))) {
             Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
                 Box(Modifier.fillMaxWidth().height(300.dp)) {
-                    Foto(fotoDe(p), Modifier.fillMaxSize(), colorDeCategoria(p.categoria))
+                    Foto(fotoDe(p), Modifier.fillMaxSize(), colorDeCategoria(p.categoria), p.categoria)
                     Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to rgba(32, 29, 43, .45f), .35f to rgba(32, 29, 43, 0f))))
                 }
                 // La hoja de contenido sube 30 sobre la foto (top:270 en el mockup). El offset no achica el
@@ -378,6 +369,16 @@ private fun ContenidoDetalle(ir: Ir, p: Plan, recargar: () -> Unit) {
             cancelandoEntrada, if (p.cancelacion == "strict") "Tu entrada no tiene reembolso" else "¿Cancelar tu entrada?",
             planesPolitica(p.cancelacion), if (p.cancelacion == "strict") null else "Cancelar mi entrada", { cancelandoEntrada = false },
         ) { cancelarMiEntrada() }
+        HojaConfirmar(
+            bajandome, if (p.adentro) "¿Te bajás del plan?" else "¿Retirás tu pedido?",
+            if (p.adentro) "Tu lugar queda libre para otra persona y salís del chat del plan."
+            else "${p.organizador.nombre.ifEmpty { "Quien organiza" }} ya no va a ver tu pedido.",
+            if (p.adentro) "Bajarme" else "Retirar el pedido", { bajandome = false },
+        ) {
+            c.api.salir(p.id)
+            avisos.ok(if (p.adentro) "Listo, te bajaste del plan." else "Listo, retiraste tu pedido.")
+            recargar()
+        }
         // «Antes de sumarte» (confirmar_mujer / confirmar_diversidad): en Android es la hoja global
         // de Genero.kt (conConfirmacion).
     }
@@ -443,6 +444,7 @@ private fun EstadoAbajo(
         Cupo.completo(p.faltan) -> Box(Modifier.fillMaxWidth().height(58.dp).gel(20.dp, Gels.limaBadge), contentAlignment = Alignment.Center) {
             T("Completo", 17f, 800, C.carbon)
         }
+        cerroParaSumarse(p) -> T("Este plan ya arrancó.", 15f, 700, pal.texto2, alinear = TextAlign.Center)
         else -> {
             // Se bajó (`cancelada`): puede volver a sumarse, pero se le recuerda.
             if (p.miEstado == "cancelada") T("Te bajaste de este plan.", 13f, 600, pal.texto2, alinear = TextAlign.Center)
