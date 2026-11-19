@@ -60,10 +60,12 @@ fun CaigoTema(tema: String = "auto", contenido: @Composable () -> Unit) {
     val p = if (oscuro) PaletaOscura else PaletaClara
     // Íconos de la barra de estado según el tema elegido (no el del sistema).
     val vista = androidx.compose.ui.platform.LocalView.current
+    // Una pantalla de paleta fija (ar.com.caigo.app.tema.PaletaFija) manda sobre el tema mientras está.
+    val barraOscura = ar.com.caigo.app.tema.BarraEstado.pedidos.lastOrNull()?.second ?: oscuro
     androidx.compose.runtime.SideEffect {
         val w = (vista.context as? android.app.Activity)?.window ?: return@SideEffect
         androidx.core.view.WindowCompat.getInsetsController(w, vista).apply {
-            isAppearanceLightStatusBars = !oscuro
+            isAppearanceLightStatusBars = !barraOscura
             isAppearanceLightNavigationBars = !oscuro
         }
     }
@@ -204,7 +206,6 @@ fun CaigoNav(c: Contenedor) {
                     hoja("verificacion") { Verificacion(ir) }
                     hoja("dni?plan={plan}") { Dni(ir, it.arg("plan").ifBlank { null }) }
                     hoja(RUTA_PEDIR_DNI) { PedirDni(ir, it.arg("motivo").ifBlank { "gente" }, it.arg("plan").ifBlank { null }) }
-                    composable("mazo?modo={modo}") { VistaMazo(ir, it.arg("modo").ifBlank { "gente" }) }
                     composable(ingresoRutaDni) { Dni(ir, null, alta = true) }
 
                     composable("principal?tab={tab}&modo={modo}", enterTransition = { fadeIn(tween(250)) }) {
